@@ -1,6 +1,8 @@
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, Date
 from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.ext.hybrid import hybrid_property
 from datetime import date
+from collections import defaultdict
 
 Base = declarative_base()
 
@@ -10,6 +12,18 @@ class Season(Base):
     id = Column(Integer, primary_key=True)
     year = Column(Integer, unique=True, nullable=False)
     shows = relationship("Show", back_populates="season")
+    # Caption weights per season (e.g., Music Effect=30)
+    caption_weights = relationship("CaptionWeight", back_populates="season")
+
+# Defines caption weights for each season, allowing per-season scoring rules
+class CaptionWeight(Base):
+    __tablename__ = "caption_weights"
+    id = Column(Integer, primary_key=True)
+    season_id = Column(Integer, ForeignKey("seasons.id"))
+    caption = Column(String, nullable=False)
+    weight = Column(Float, nullable=False)
+
+    season = relationship("Season", back_populates="caption_weights")
 
 # Host schools or venues
 class HostLocation(Base):
@@ -32,6 +46,7 @@ class Show(Base):
 
     season = relationship("Season", back_populates="shows")
     host = relationship("HostLocation", back_populates="shows")
+    week = Column(Integer, nullable=False)
     judge_assignments = relationship("JudgeAssignment", back_populates="show")
 
 # Judges and their information (caption assigned per show via JudgeAssignment)
@@ -84,6 +99,32 @@ class Performance(Base):
     group = relationship("Group")
     show = relationship("Show")
     caption_scores = relationship("CaptionScore", back_populates="performance")
+
+    @hybrid_property
+    def averaged_caption_scores(self):
+        """
+        Returns a dict of {caption: weighted_average_score} for this performance,
+        averaging across all judges and applying the season's caption weights.
+
+        This is basically a really stupid way to get comp + perf / 2
+        """
+        # Collect each judge’s raw average for the caption
+        temp = defaultdict(list)
+        for cs in self.caption_scores:
+            avg = (cs.comp_score + cs.perf_score) / 2
+            temp[cs.caption].append(avg)
+
+        # Build a map of caption → weight from the season
+        weights = {w.caption: w.weight for w in self.show.season.caption_weights}
+
+        # Compute weighted averages
+        return {
+            cap: round(
+                sum(val * weights.get(cap, 0) / 100 for val in vals) / len(vals),
+                3
+            )
+            for cap, vals in temp.items()
+        }
 
 # Individual caption-level score for a performance
 class CaptionScore(Base):
