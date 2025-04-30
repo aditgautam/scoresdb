@@ -4,16 +4,14 @@ from datetime import date
 
 Base = declarative_base()
 
-
-# Represents a competitive season, for example 2025
+# Represents a competitive season
 class Season(Base):
     __tablename__ = "seasons"
     id = Column(Integer, primary_key=True)
     year = Column(Integer, unique=True, nullable=False)
     shows = relationship("Show", back_populates="season")
 
-
-# Host school / location, eg Monrovia HS or CSUF
+# Host schools or venues
 class HostLocation(Base):
     __tablename__ = "hosts"
     id = Column(Integer, primary_key=True)
@@ -22,12 +20,11 @@ class HostLocation(Base):
     state = Column(String)
     shows = relationship("Show", back_populates="host")
 
-
-# Regular season and championship shows
+# A single competition/show, held at a host school and part of a season
 class Show(Base):
     __tablename__ = "shows"
     id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False)  # Distinguishes between Saturday and Sunday
+    name = Column(String, nullable=False)
     date = Column(Date, default=date.today)
 
     season_id = Column(Integer, ForeignKey("seasons.id"))
@@ -37,39 +34,34 @@ class Show(Base):
     host = relationship("HostLocation", back_populates="shows")
     judge_assignments = relationship("JudgeAssignment", back_populates="show")
 
-
-# Caption assignment for a judge at a specific show
-class JudgeAssignment(Base):
-    __tablename__ = "judge_assignments"
-    id = Column(Integer, primary_key=True)
-    show_id = Column(Integer, ForeignKey("shows.id"))
-    judge_id = Column(Integer, ForeignKey("judges.id"))
-    caption = Column(String)  # e.g., "Music Effect", "Visual", "Music"
-
-    show = relationship("Show", back_populates="judge_assignments")
-    judge = relationship("Judge", back_populates="assignments")
-
-
-# Judges — now just names and IDs
+# Judges and their information (caption assigned per show via JudgeAssignment)
 class Judge(Base):
     __tablename__ = "judges"
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
 
-    # Assignments help us identify what show each judge adjucated
     assignments = relationship("JudgeAssignment", back_populates="judge")
     caption_scores = relationship("CaptionScore", back_populates="judge")
 
+# Assignment of a judge to a caption for a specific show
+class JudgeAssignment(Base):
+    __tablename__ = "judge_assignments"
+    id = Column(Integer, primary_key=True)
+    show_id = Column(Integer, ForeignKey("shows.id"))
+    judge_id = Column(Integer, ForeignKey("judges.id"))
+    caption = Column(String)
 
-# Classification: PIW, PSW, PIO, etc
+    show = relationship("Show", back_populates="judge_assignments")
+    judge = relationship("Judge", back_populates="assignments")
+
+# Classification of a group (e.g. PSW, PIW)
 class Classification(Base):
     __tablename__ = "classifications"
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
     groups = relationship("Group", back_populates="classification")
 
-
-# Each group
+# Performing groups
 class Group(Base):
     __tablename__ = "groups"
     id = Column(Integer, primary_key=True)
@@ -79,8 +71,7 @@ class Group(Base):
     classification_id = Column(Integer, ForeignKey("classifications.id"))
     classification = relationship("Classification", back_populates="groups")
 
-
-# Each unique scored performance
+# A single performance of a group at a show
 class Performance(Base):
     __tablename__ = "performances"
     id = Column(Integer, primary_key=True)
@@ -94,19 +85,16 @@ class Performance(Base):
     show = relationship("Show")
     caption_scores = relationship("CaptionScore", back_populates="performance")
 
-
-# Subcaption scores, includes relative placements
+# Individual caption-level score for a performance
 class CaptionScore(Base):
     __tablename__ = "caption_scores"
     id = Column(Integer, primary_key=True)
     performance_id = Column(Integer, ForeignKey("performances.id"))
-    caption = Column(String)  # "Vis effect" "music effect" etc
+    caption = Column(String)
     weight = Column(Float)
-
     comp_score = Column(Float)
     perf_score = Column(Float)
     placement = Column(Integer)
-
     judge_id = Column(Integer, ForeignKey("judges.id"))
 
     performance = relationship("Performance", back_populates="caption_scores")
