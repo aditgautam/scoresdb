@@ -15,7 +15,7 @@ class Season(Base):
     # Caption weights per season (e.g., Music Effect=30)
     caption_weights = relationship("CaptionWeight", back_populates="season")
 
-# Defines caption weights for each season, allowing per-season scoring rules
+# Defines caption weights for each season
 class CaptionWeight(Base):
     __tablename__ = "caption_weights"
     id = Column(Integer, primary_key=True)
@@ -43,10 +43,10 @@ class Show(Base):
 
     season_id = Column(Integer, ForeignKey("seasons.id"))
     host_id = Column(Integer, ForeignKey("hosts.id"))
+    week = Column(Integer, nullable=False)
 
     season = relationship("Season", back_populates="shows")
     host = relationship("HostLocation", back_populates="shows")
-    week = Column(Integer, nullable=False)
     judge_assignments = relationship("JudgeAssignment", back_populates="show")
 
 # Judges and their information (caption assigned per show via JudgeAssignment)
@@ -86,18 +86,28 @@ class Group(Base):
     classification_id = Column(Integer, ForeignKey("classifications.id"))
     classification = relationship("Classification", back_populates="groups")
 
+    # link to all performances
+    performances = relationship("Performance", back_populates="group")
+
 # A single performance of a group at a show
 class Performance(Base):
     __tablename__ = "performances"
     id = Column(Integer, primary_key=True)
     group_id = Column(Integer, ForeignKey("groups.id"))
     show_id = Column(Integer, ForeignKey("shows.id"))
+
+    # CHANGED: moved classification to Performance to capture at show-time
+    classification_id = Column(Integer, ForeignKey("classifications.id"), nullable=False)
+    classification = relationship("Classification")
+    # ADDED: block number when shows have multiple blocks 
+    block_number = Column(Integer, nullable=True)       # Nullable: some shows will not 
+
     total_score = Column(Float)
     placement = Column(Integer)
     penalty = Column(Float, default=0.0)
 
-    group = relationship("Group")
-    show = relationship("Show")
+    group = relationship("Group", back_populates="performances")
+    show = relationship("Show", back_populates="performances")
     caption_scores = relationship("CaptionScore", back_populates="performance")
 
     @hybrid_property
