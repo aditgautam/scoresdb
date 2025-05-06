@@ -50,9 +50,10 @@ class Show(Base):
     performances = relationship(
         "Performance",
         back_populates="show",
-        cascade="all, delete‑orphan"
+        cascade="all, delete-orphan"
     )
     judge_assignments = relationship("JudgeAssignment", back_populates="show")
+    pdf_name = Column(String, unique=True, nullable=False)
 # Judges and their information (caption assigned per show via JudgeAssignment)
 class Judge(Base):
     __tablename__ = "judges"
