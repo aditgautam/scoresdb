@@ -47,8 +47,12 @@ class Show(Base):
 
     season = relationship("Season", back_populates="shows")
     host = relationship("HostLocation", back_populates="shows")
+    performances = relationship(
+        "Performance",
+        back_populates="show",
+        cascade="all, delete‑orphan"
+    )
     judge_assignments = relationship("JudgeAssignment", back_populates="show")
-
 # Judges and their information (caption assigned per show via JudgeAssignment)
 class Judge(Base):
     __tablename__ = "judges"
