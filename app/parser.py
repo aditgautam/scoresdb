@@ -26,12 +26,24 @@ from models import (
 CLASS_BLOCK_RE = re.compile(r"^(?P<class>.*?)(?:\s*[–-]\s*Block\s*(?P<block>\d+))?$",
                             re.IGNORECASE)
 
-def parse_class_block(text: str) -> tuple[str, int|None]:
-    m = CLASS_BLOCK_RE.match((text or "").strip())
+def parse_class_block(text: str) -> tuple[str, int | None]:
+    """
+    Splits a text like "Percussion Scholastic A – Block 2" into:
+      ("Percussion Scholastic A", 2)
+    Or without a block:
+      ("Percussion Independent World", None)
+    """
+    if not text:
+        return None, None
+
+    m = CLASS_RE.search(text.strip())
     if not m:
-        raise ValueError(f"Unrecognized class/block: {text!r}")
-    classification = m.group("class").strip()
-    block = int(m.group("block")) if m.group("block") else None
+        # no valid class found
+        return None, None
+
+    classification = m.group(1).strip()
+    block_str      = m.group(2)
+    block          = int(block_str) if block_str else None
     return classification, block
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,7 +52,11 @@ def parse_class_block(text: str) -> tuple[str, int|None]:
 DATE_RE     = re.compile(r"([A-Za-z]+ \d{1,2},\s*\d{4})")
 LOC_RE      = re.compile(r"–\s*([A-Za-z ]+,\s*[A-Z]{2})")
 SHOWNAME_RE = re.compile(r"([A-Za-z ]+ HS(?: Saturday| Sunday| Finals| Prelims))")
-CLASS_RE    = re.compile(r"(Percussion Scholastic [A-Za-z ]+(?: – Block \d+)?)")
+CLASS_RE = re.compile(
+    r"(Percussion (?:Scholastic|Independent) [A-Za-z ]+)"
+    r"(?:\s*[–-]\s*Block\s*\d+)?",
+    re.IGNORECASE
+)
 
 def scan_pdf_header(pdf_path: str, page_no: int = 0) -> dict:
     meta = {}
@@ -204,57 +220,56 @@ def get_or_create(session: Session, model, **kw):
 def ingest_pdf(session: Session, pdf_path: str):
     fn = os.path.basename(pdf_path)
 
-    # header scan
-    hdr = scan_pdf_header(pdf_path, 0)
-    show_name = hdr.get("show_name")
-    show_date = hdr.get("show_date")
+    # 1) Header scan
+    hdr0      = scan_pdf_header(pdf_path, page_no=0)
+    show_name = hdr0.get("show_name")
+    show_date = hdr0.get("show_date")
+    location  = hdr0.get("location")
 
-    # fallback if header missed name/date
+    # 2) Filename fallback if header failed
     if not show_name or not show_date:
         fb = parse_filename(fn)
         show_name = show_name or fb["show_name"]
         show_date = show_date or fb["show_date"]
-        hostid    = fb["hostid"]
-        city      = fb["city"]
-        state     = fb["state"]
+        # location may come from header or filename
+        city = fb["city"]
+        state = fb["state"]
     else:
-        # hostid from show_name
-        hostid = show_name.rsplit(" ",1)[0].lower().replace(" ","_")
-        # city/state from header location
-        loc = hdr.get("location","")
-        if "," in loc:
-            city, state = [x.strip() for x in loc.split(",",1)]
+        # parse hostid from show_name
+        hostid = show_name.rsplit(" ", 1)[0].lower().replace(" ", "_")
+        # parse city/state from header location
+        if location and "," in location:
+            city, state = [p.strip() for p in location.split(",", 1)]
         else:
             city = state = None
 
-    # season
+    # 3) Upsert Season
     season = get_or_create(session, Season, year=show_date.year)
 
-    # host upsert using the hostid as name
+    # 4) Upsert HostLocation
     host = get_or_create(
         session, HostLocation,
-        name = hostid.replace("_"," ").title(),
-        city = city,
-        state= state
+        name  = show_name.rsplit(" ",1)[0],  # e.g. "Arcadia HS"
+        city  = city,
+        state = state
     )
-    # 8e) Compute week number: count of earlier shows in this season + 1
-    week_num = session.query(Show) \
-        .filter(Show.season_id == season.id, Show.date < show_date) \
-        .count() + 1
 
-    # 8f) Upsert Show *by pdf_name only*, updating the other fields if it already exists
-    show = session.query(Show) \
-                  .filter_by(pdf_name=fn) \
-                  .one_or_none()
+    # 5) Compute week
+    week_num = (
+        session.query(Show)
+               .filter(Show.season_id == season.id, Show.date < show_date)
+               .count()
+        + 1
+    )
 
+    # 6) Upsert (or update) Show by pdf_name
+    show = session.query(Show).filter_by(pdf_name=fn).one_or_none()
     if show:
-        # Update in case anything changed
         show.name      = show_name
         show.date      = show_date
         show.season_id = season.id
         show.host_id   = host.id
         show.week      = week_num
-        # no need to set pdf_name—it’s the same
     else:
         show = Show(
             season_id = season.id,
@@ -265,38 +280,45 @@ def ingest_pdf(session: Session, pdf_path: str):
             pdf_name  = fn
         )
         session.add(show)
-
     session.flush()
 
-    # overwrite existing
+    # 7) Clear old performances (overwrite mode)
     if show.performances:
         show.performances.clear()
         session.flush()
 
-    # caption weights map
-    cw_map = {cw.caption:cw.weight for cw in season.caption_weights}
+    # 8) Build caption → weight map
+    cw_map = {cw.caption: cw.weight for cw in season.caption_weights}
 
-    # ingest pages
+    # 9) Extract and ingest each page/block
     with pdfplumber.open(pdf_path) as pdf:
-        for pno in range(len(pdf.pages)):
-            ph = scan_pdf_header(pdf_path, pno)
-            cls_txt = ph.get("classification_text","")
+        for page_no in range(len(pdf.pages)):
+            per_hdr = scan_pdf_header(pdf_path, page_no=page_no)
+            cls_txt = per_hdr.get("classification_text", "")
             classification, block = parse_class_block(cls_txt)
 
-            tables = extract_tables(pdf_path, pages=str(pno+1))
-            for tbl in tables:
-                df = clean_table(tbl.df)
+            tables = extract_tables(pdf_path, pages=str(page_no+1))
+            for table in tables:
+                df = clean_table(table.df)
                 df = split_caption_cells(df)
 
-                for row in df.to_dict("records"):
+                # — robust filtering of non-performance rows —
+                # a) must have both Group & Home City
+                df = df[df['Group'].notna() & df['Home City'].notna()]
+                # b) drop any rogue header row
+                df = df[df['Group'].str.strip().str.lower() != 'group']
+                # c) require a positive subtotal_total
+                df = df[df['subtotal_total'].apply(lambda x: isinstance(x, float) and x > 0)]
+
+                for row in df.to_dict(orient='records'):
                     grp = get_or_create(
                         session, Group,
-                        name     = row["Group"],
-                        home_city=row["Home City"]
+                        name      = row['Group'],
+                        home_city = row['Home City']
                     )
                     cls = get_or_create(
                         session, Classification,
-                        name=classification
+                        name=classification or 'Unknown'
                     )
 
                     perf = Performance(
@@ -304,26 +326,27 @@ def ingest_pdf(session: Session, pdf_path: str):
                         group_id          = grp.id,
                         classification_id = cls.id,
                         block_number      = block,
-                        total_score       = row.get("subtotal_total",0.0),
-                        placement         = row.get("subtotal_place",0),
-                        penalty           = row.get("timing_penalty",0.0)
+                        total_score       = row.get('subtotal_total', 0.0),
+                        placement         = row.get('subtotal_place',   0),
+                        penalty           = row.get('timing_penalty',  0.0)
                     )
                     session.add(perf)
                     session.flush()
 
-                    for cap in ["Effect - Music","Effect - Visual","Music","Visual"]:
-                        slug = cap.lower().replace(" ","_").replace("-","")
+                    for cap in ['Effect - Music', 'Effect - Visual', 'Music', 'Visual']:
+                        slug = cap.lower().replace(' ', '_').replace('-', '')
                         cs = CaptionScore(
-                            performance=perf,
-                            caption    = cap,
-                            weight     = cw_map.get(cap,0.0),
-                            comp_score = row.get(f"{slug}_comp",0.0),
-                            perf_score = row.get(f"{slug}_perf",0.0),
-                            placement  = row.get(f"{slug}_place",0),
-                            judge_id   = None
+                            performance = perf,
+                            caption     = cap,
+                            weight      = cw_map.get(cap, 0.0),
+                            comp_score  = row.get(f"{slug}_comp", 0.0),
+                            perf_score  = row.get(f"{slug}_perf", 0.0),
+                            placement   = row.get(f"{slug}_place", 0),
+                            judge_id    = None
                         )
                         session.add(cs)
 
+    # 10) Commit all changes for this PDF
     session.commit()
 
 # ─────────────────────────────────────────────────────────────────────────────
